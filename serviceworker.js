@@ -1,8 +1,9 @@
-const CACHE_NAME = 'mkv-player-v1';
+const CACHE_NAME = 'mkv-player-v4';
 const urlsToCache = [
     '/',
     'index.html',
     'serviceworker.js',
+    'mkv-demuxer.wasm'
     'mkv-demuxer.js' // 重要なデコーダーライブラリもキャッシュ
 ];
 
