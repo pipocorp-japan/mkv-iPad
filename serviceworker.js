@@ -1,4 +1,4 @@
-const CACHE_NAME = 'mkv-player-v4';
+const CACHE_NAME = 'mkv-player-v5';
 const urlsToCache = [
     '/',
     'index.html',
