@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MKV Offline Player (WebCodecs)</title>
+    
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            padding: 20px;
+            background-color: #f4f7f9;
+            text-align: center;
+        }
+        #app {
+            max-width: 800px;
+            margin: 0 auto;
+            background: #ffffff;
+            padding: 25px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            text-align: left;
+        }
+        h1 {
+            color: #333;
+            border-bottom: 2px solid #eee;
+            padding-bottom: 10px;
+            margin-top: 0;
+        }
+        input[type="file"] {
+            display: block;
+            margin: 20px 0;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        #videoCanvas {
+            width: 100%;
+            max-height: 450px;
+            background: #000;
+            margin-top: 20px;
+            border-radius: 4px;
+        }
+        #playback-status {
+            margin-top: 15px;
+            font-weight: bold;
+            color: #007bff;
+        }
+        #resume-info {
+            margin-top: 10px;
+            font-size: 0.9em;
+            color: #555;
+        }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <h1>MKV オフラインプレイヤー</h1>
+        <p>⚠️ Wi-Fiを切る前に、一度このページにアクセスしてオフラインキャッシュを有効にしてください。</p>
+        
+        <input type="file" id="mkvFileInput" accept=".mkv">
+        
+        <div id="playback-status">ファイルを選択し、再生を開始します...</div>
+        
+        <canvas id="videoCanvas"></canvas>
+        
+        <div id="resume-info"></div>
+    </div>
+    
+    <script src="mkv-demuxer.js"></script> 
+
+    <script>
+        // Service Workerの登録（オフライン化）
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('serviceworker.js').then(function(reg) {
+                console.log('Service Worker Registered!', reg);
+            }).catch(function(err) {
+                console.log('Service Worker registration failed: ', err);
+            });
+        }
+        
+        // --- プレイヤーのメインロジック（player.jsの内容） ---
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const fileInput = document.getElementById('mkvFileInput');
+            const canvas = document.getElementById('videoCanvas');
+            const statusDiv = document.getElementById('playback-status');
+            const resumeInfo = document.getElementById('resume-info');
+            const ctx = canvas.getContext('2d');
+            
+            // 1. IndexedDBの初期化 (レジューム再生データの保存用)
+            const dbName = 'mkvResumeDB';
+            let db;
+
+            const request = indexedDB.open(dbName, 1);
+            
+            request.onupgradeneeded = (event) => {
+                db = event.target.result;
+                // 再生位置を保存するオブジェクトストアを作成
+                db.createObjectStore('resumePositions', { keyPath: 'fileName' });
+            };
+
+            request.onsuccess = (event) => {
+                db = event.target.result;
+                console.log('IndexedDB ready.');
+            };
+            
+            // 2. ファイル選択時の処理
+            fileInput.addEventListener('change', async (event) => {
+                const file = event.target.files[0];
+                if (!file) return;
+
+                statusDiv.textContent = `${file.name} を読み込み中...`;
+                
+                // 3. ファイルのバッファ読み込み
+                const buffer = await file.arrayBuffer();
+                
+                // 4. レジューム位置の確認
+                const resumeTime = await getResumePosition(file.name);
+                if (resumeTime > 0) {
+                    resumeInfo.textContent = `レジューム位置: ${resumeTime.toFixed(1)}秒から再生を試みます。`;
+                } else {
+                    resumeInfo.textContent = `新規再生を開始します。`;
+                }
+                
+                // --- 🚨 5. WebCodecsとMKV Demuxingの処理 ---
+                
+                try {
+                    // ⚠️ ここからが最重要で、mkv-demuxer.jsの実装が必要です。
+                    
+                    if (typeof MKVDemuxer === 'undefined') {
+                        throw new Error('mkv-demuxer.js が読み込まれていません。または実装されていません。');
+                    }
+
+                    const demuxer = new MKVDemuxer(buffer); 
+                    const videoConfig = demuxer.getVideoConfig();
+                    
+                    // Canvasサイズの設定
+                    canvas.width = videoConfig.codedWidth;
+                    canvas.height = videoConfig.codedHeight;
+                    
+                    // 6. WebCodecs VideoDecoder のセットアップ
+                    const decoder = new VideoDecoder({
+                        output: (frame) => {
+                            // デコードされたフレームをCanvasに描画
+                            ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
+                            frame.close(); // メモリ解放
+                            
+                            // 簡易的なレジューム位置の保存（例：1秒ごとに保存）
+                            // 実際はタイムスタンプを取得して保存する必要があります
+                            // saveResumePosition(file.name, frame.timestamp / 1000000); 
+                        },
+                        error: (e) => {
+                            statusDiv.textContent = `デコードエラー: ${e.message} (${videoConfig.codec})`;
+                            console.error(e);
+                        }
+                    });
+
+                    decoder.configure(videoConfig); 
+                    
+                    // 7. 映像チャンクのデキュー (再生)
+                    // 実際は音声と同期を取りながら、デコーダーにチャンクを渡すループ処理が必要です。
+                    // demuxer.startDecodingLoop(decoder, resumeTime); 
+
+                    statusDiv.textContent = `${file.name} デコード処理を開始しました。（再生はmkv-demuxer.jsの実装に依存します）`;
+
+                } catch (error) {
+                    statusDiv.textContent = `再生失敗: ${error.message}`;
+                    console.error('再生ロジックエラー:', error);
+                    return;
+                }
+                
+                // 8. ページを閉じるときなどに、終了位置を保存するイベントリスナーが必要
+            });
+
+            // 9. IndexedDBのレジューム保存/取得関数
+            function saveResumePosition(fileName, time) {
+                // timeは秒単位
+                return new Promise((resolve) => {
+                    if (!db) return resolve();
+                    const transaction = db.transaction(['resumePositions'], 'readwrite');
+                    const store = transaction.objectStore('resumePositions');
+                    store.put({ fileName: fileName, time: time });
+                    transaction.oncomplete = resolve;
+                });
+            }
+
+            function getResumePosition(fileName) {
+                return new Promise((resolve) => {
+                    if (!db) return resolve(0);
+                    const transaction = db.transaction(['resumePositions'], 'readonly');
+                    const store = transaction.objectStore('resumePositions');
+                    const request = store.get(fileName);
+                    
+                    request.onsuccess = (event) => {
+                        resolve(event.target.result ? event.target.result.time : 0);
+                    };
+                    request.onerror = () => resolve(0);
+                });
+            }
+        });
+    </script>
+</body>
+</html>
